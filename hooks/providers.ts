@@ -284,28 +284,6 @@ function errorText(data: unknown): string | undefined {
   return undefined
 }
 
-export const ICON: Record<Status, string> = {
-  success: '✓',
-  failed: '✗',
-  running: '●',
-  pending: '○',
-  canceled: '⊘',
-  skipped: '⊘',
-  manual: '▶',
-  unknown: '?',
-}
-
-export const COLOR: Record<Status, 'success' | 'error' | 'warning' | 'subtle' | 'suggestion' | 'inactive'> = {
-  success: 'success',
-  failed: 'error',
-  running: 'warning',
-  pending: 'suggestion',
-  canceled: 'inactive',
-  skipped: 'inactive',
-  manual: 'subtle',
-  unknown: 'subtle',
-}
-
 export function isActive(status: Status): boolean {
   return status === 'running' || status === 'pending'
 }
@@ -370,34 +348,6 @@ export function stagesOf(jobs: readonly Job[]): Stage[] {
       status: rollup(list.map(job => job.status)),
       done: list.filter(job => SETTLED.includes(job.status)).length,
     }
-  })
-}
-
-export const BAR_GLYPH: Record<Status, string> = {
-  success: '█',
-  failed: '█',
-  running: '▓',
-  pending: '░',
-  canceled: '░',
-  skipped: '░',
-  manual: '▒',
-  unknown: '░',
-}
-
-/**
- * A stepped progress bar: one segment per stage, `width` cells in all, one
- * blank between segments; each segment is its stage's glyph and colour.
- */
-export function progressSegments(stages: readonly Stage[], width: number): { text: string; status: Status }[] {
-  if (stages.length === 0) return []
-  const room = Math.max(stages.length, width - (stages.length - 1))
-  const base = Math.floor(room / stages.length)
-  let extra = room - base * stages.length
-
-  return stages.map(stage => {
-    const cells = Math.max(1, base + (extra-- > 0 ? 1 : 0))
-
-    return { text: BAR_GLYPH[stage.status].repeat(cells), status: stage.status }
   })
 }
 

@@ -1,8 +1,9 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
-import type { On, ProcessRunResult } from 'claude-code'
+import type { On, ProcessRunResult, RenderElement } from 'claude-code'
 
 import { detectServers } from './gitlab'
-import { glJobs, glPipelines, progressSegments, stagesOf, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
+import { progressOf, trackSvg } from './track'
+import { glJobs, glPipelines, stagesOf, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
 
 const GH = { provider: 'github', host: 'github.com', path: 'acme/app' } as const
 const GL = { provider: 'gitlab', host: 'gitlab.example.com', path: 'grp/sub/app' } as const
@@ -59,7 +60,7 @@ function host(on: On, calls: string[][]) {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.toast', () => ({ value: undefined }))
-  on('ui.render', () => null as never)
+  on('ui.render', ($, e) => h($.ui.resolve(e).Box, {}) as RenderElement)
 
   return clock
 }
@@ -168,11 +169,11 @@ function gitlabHost(on: On, calls: string[]): void {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.toast', () => ({ value: undefined }))
-  on('ui.render', () => null as never)
+  on('ui.render', ($, e) => h($.ui.resolve(e).Box, {}) as RenderElement)
 }
 
 describe('stages', () => {
-  test('rolls jobs up into stages and a stepped bar', () => {
+  test('rolls jobs up into stages and a progress track', () => {
     const stages = stagesOf([
       { id: '1', name: 'a', stage: 'build', status: 'success' },
       { id: '2', name: 'b', stage: 'test', status: 'success' },
@@ -184,8 +185,13 @@ describe('stages', () => {
       ['test', 'running', 1],
       ['deploy', 'manual', 0],
     ])
-    const bar = progressSegments(stages, 14)
-    expect(bar.map(segment => segment.text).join(' ')).toBe('████ ▓▓▓▓ ▒▒▒▒')
+    const progress = progressOf(stages, 'running')
+    expect(progress.percent).toBe(50)
+    expect(progress.current?.name).toBe('test')
+    expect(progress.bounds).toEqual([0.25, 0.75])
+    const svg = trackSvg(progress, 'running', 'test', 300)
+    expect(svg).toContain('>test</text>')
+    expect(progressOf(stages, 'success').percent).toBe(100)
   })
 })
 

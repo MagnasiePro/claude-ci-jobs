@@ -3,21 +3,21 @@
 A Claude Code mod that shows the **GitHub Actions / GitLab CI pipelines of the current session** in a band right above the prompt, terminal and desktop alike.
 
 - Tracks the branch checked out in the session's folder, plus every branch pushed during the session (`git push`, `gh pr create`, `glab mr create` run by Claude); one line per branch, its latest pipeline.
-- Each line is a **stepped progress bar**, one segment per stage (GitLab stage, or GitHub job): `█` done, `▓` running, `░` waiting, `▒` manual, red on failure, then the current stage and how far along it is.
-- Click a line (`▸` / `▾`) to open the detail: stages and their jobs with status and duration, `↻` to retry a job, **↻ Relancer les échecs** for the failed jobs, **Ouvrir ↗** for the pipeline page.
+- Each line is a **progress track** in the style of the [plan-progress](https://github.com/arhunsaday/claude-plugins/tree/main/plugins/plan-progress) mod by Arhun Saday: a rounded rail filled over the jobs already settled, a capsule at every stage boundary, and a coloured pill at the head naming the current stage (purple running, amber manual, red failed, green done), then the percentage. The terminal draws it as a thin `━━━───` line.
+- Click a line (`⌄` / `⌃`) to open the detail: stages and their jobs with status and duration, `↻` to retry a job, **↻ Relancer les échecs** for the failed jobs, **Ouvrir ↗** for the pipeline page.
 - Refreshes every 20 s while something runs (every 80 s otherwise), and right after a push.
 
 ```
-▸ ✗ ████ ████ ███ ░░░░  test 2/4 · feat/login · #812 · push · 3m
-▾ ● ████ ▓▓▓▓ ░░░ ░░░░  test 1/4 · main · CI · chore: deps · 40s
+● feat: login form  feat/login   [▓▓▓▓▓▓▓▓▓▓▓|▓▓▓▓( test )─────|──────]  62%  ⌄
+✓ chore: deps       main         [▓▓▓▓▓▓▓▓▓▓▓|▓▓▓▓▓▓▓▓▓▓▓▓|▓( ✓ 3 étapes )] 100%  ⌃
     ✓ build 1/1
-    │ ✓ docker-build                1m02  ↻
-    ● test 1/2
-    │ ✓ lint                          18s  ↻
-    │ ● unit                               ↻
-    ○ deploy 0/1
-      ○ update-helm                        ↻
-    ↻ Relancer les échecs  Ouvrir ↗  via MCP GitLab local
+      ✓ docker-build                1m02  ↻
+    ✓ test 2/2
+      ✓ lint                          18s  ↻
+      ✓ unit                          41s  ↻
+    ✓ deploy 1/1
+      ✓ update-helm                   12s  ↻
+    Ouvrir ↗  2h · via MCP GitLab local
 ```
 
 ## Requirements

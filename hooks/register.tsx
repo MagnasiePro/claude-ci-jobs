@@ -1,16 +1,14 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
-import type { Job, Pipeline, Repo } from '../types'
+import type { Job, Pipeline, Repo, Status } from '../types'
+import { STATUS_HEX, TRACK_H, progressOf, textTrack, textWidth, trackSvg } from './track'
 import { BACKEND_LABEL, detectServers, glabArgv, localCall, mcpData, officialCall } from './gitlab'
 import type { BackendKind, GitlabOp, GitlabServers } from './gitlab'
 import {
-  COLOR,
-  ICON,
   formatAge,
   formatDuration,
   latestPerBranch,
-  progressSegments,
   stagesOf,
   glJobs,
   glPipelines,
@@ -36,6 +34,19 @@ const updatedAt = atom({ plugin: 'ci-jobs', key: 'updatedAt' } as const, 0)
 const via = atom({ plugin: 'ci-jobs', key: 'via' } as const, null)
 
 type Dollar = EngineInterface
+
+const FIGURE_SPACE = String.fromCharCode(0x2007)
+/** plan-progress' glyphs: running, waiting on a person, failed, done. */
+const GLYPH: Record<Status, string> = {
+  running: '●',
+  pending: '○',
+  manual: '?',
+  failed: '!',
+  success: '✓',
+  canceled: '–',
+  skipped: '–',
+  unknown: '·',
+}
 
 const BINARIES: Record<'gh' | 'glab', string[]> = {
   gh: ['gh', '/opt/homebrew/bin/gh', '/usr/local/bin/gh'],
@@ -370,75 +381,80 @@ export const register: Register = (on, options) => {
     const error = await read($, errorAtom)
     if (!repo || (list.length === 0 && !error)) return next(e)
 
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const t = $.ui.resolve(e)
+    const { Box, Text, Button, Link } = t
+    const Svg = 'Svg' in t ? t.Svg : null
     const open = await read($, expanded)
     const running = await read($, busy)
     const backend = await read($, via)
     const now = Date.now()
-    const cols = e.props.bodyColumns
-    const barWidth = Math.max(8, Math.min(28, Math.floor(cols / 4)))
+    const shown = list.slice(0, 5)
+    const titleOf = (pipe: Pipeline) => `${pipe.branch} · ${pipe.title}`
 
-    const rows = list.slice(0, 5).map(pipe => {
+    // the same widths for every row, so the rails line up whatever the titles (plan-progress' layout)
+    const cols = Math.max(30, e.props.bodyColumns || 100)
+    const total = Math.max(320, cols * 8)
+    const titlePx = Math.min(Math.round(total * 0.3), Math.max(...shown.map(pipe => Math.round(textWidth(titleOf(pipe), 6.4)))))
+    const trackPx = Math.max(120, Math.min(1400, total - titlePx - 120))
+    const titleCells = Math.max(6, Math.min(Math.round(cols * 0.28), Math.max(...shown.map(pipe => titleOf(pipe).length))))
+    const trackCells = Math.max(10, cols - titleCells - 14)
+
+    const rows = shown.map(pipe => {
       const isOpen = open[pipe.key] === true
       const stages = stagesOf(pipe.jobs ?? [])
-      const current = stages.find(stage => stage.status !== 'success' && stage.status !== 'skipped') ?? stages.at(-1)
-      const doneStages = stages.filter(stage => stage.status === 'success' || stage.status === 'skipped').length
+      const progress = progressOf(stages, pipe.status)
+      const color = STATUS_HEX[pipe.status]
+      const label = isActive(pipe.status)
+        ? (progress.current?.name ?? 'en attente')
+        : pipe.status === 'success'
+          ? `${stages.length} étape${stages.length > 1 ? 's' : ''}`
+          : (progress.current?.name ?? pipe.status)
       const failed = stages.some(stage => stage.status === 'failed') || pipe.status === 'failed'
       const onToggle = () => void toggle($, pipe.key)
-
-      const bar = stages.length > 0 ? (
-        progressSegments(stages, barWidth).map((segment, i) => (
-          <Text key={`seg-${pipe.key}-${i}`} color={COLOR[segment.status]}>
-            {i > 0 ? ' ' : ''}
-            {segment.text}
-          </Text>
-        ))
-      ) : (
-        <Text dimColor>{'░'.repeat(barWidth)}</Text>
-      )
+      const alt = `${titleOf(pipe)}: ${pipe.status}, ${label}, ${progress.percent}%`
+      const line = textTrack(progress.frac, trackCells)
 
       return (
         <Box key={`b-${pipe.key}`} flexDirection="column">
-          <Box flexDirection="row" gap={1}>
-            <Button key={`p-${pipe.key}`} plain onPress={onToggle}>
-              <Text dimColor>{isOpen ? '▾' : '▸'}</Text> <Text color={COLOR[pipe.status]}>{ICON[pipe.status]}</Text>
-            </Button>
-            <Box flexShrink={0}>{bar}</Box>
-            <Box flexGrow={1} flexShrink={1}>
+          <Box flexDirection="row" alignItems="center" gap={1}>
+            <Text color={color}>{GLYPH[pipe.status]}</Text>
+            <Box flexShrink={1} width={Svg ? undefined : titleCells}>
               <Button key={`t-${pipe.key}`} plain onPress={onToggle}>
                 <Text wrap="truncate">
-                  {current ? (
-                    <Text color={COLOR[current.status]}>
-                      {current.name} {doneStages}/{stages.length}
-                    </Text>
-                  ) : (
-                    <Text dimColor>…</Text>
-                  )}
-                  <Text dimColor>
-                    {' · '}
-                    {pipe.branch} · {pipe.title} · {formatAge(pipe.createdAt, now)}
-                  </Text>
+                  {pipe.title} <Text dimColor>{pipe.branch}</Text>
                 </Text>
               </Button>
             </Box>
+            <Box flexGrow={1} />
+            {Svg ? (
+              <Box flexShrink={0}>
+                <Svg source={trackSvg(progress, pipe.status, label, trackPx)} alt={alt} width={trackPx} height={TRACK_H} />
+              </Box>
+            ) : (
+              <Text>
+                <Text color={color}>{line.done}</Text>
+                <Text dimColor>{line.left}</Text>
+                <Text color={color}> {label}</Text>
+              </Text>
+            )}
+            <Text dimColor>{`${String(progress.percent).padStart(3, FIGURE_SPACE)}%`}</Text>
+            <Button key={`p-${pipe.key}`} plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={onToggle} />
           </Box>
           {isOpen && (
-            <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
+            <Box flexDirection="column" marginLeft={2} marginTop={1}>
               {!pipe.jobs && <Text dimColor>Chargement des jobs…</Text>}
-              {stages.map((stage, i) => (
+              {stages.map(stage => (
                 <Box key={`s-${pipe.key}-${stage.name}`} flexDirection="column">
                   <Text>
-                    <Text color={COLOR[stage.status]}>{ICON[stage.status]}</Text>{' '}
-                    <Text bold>{stage.name}</Text>
+                    <Text color={STATUS_HEX[stage.status]}>{GLYPH[stage.status]}</Text> <Text bold>{stage.name}</Text>
                     <Text dimColor>
                       {' '}
                       {stage.done}/{stage.jobs.length}
                     </Text>
                   </Text>
                   {stage.jobs.map(job => (
-                    <Box key={`j-${pipe.key}-${job.id}`} flexDirection="row" gap={1}>
-                      <Text dimColor>{i < stages.length - 1 ? '│' : ' '}</Text>
-                      <Text color={COLOR[job.status]}>{ICON[job.status]}</Text>
+                    <Box key={`j-${pipe.key}-${job.id}`} flexDirection="row" gap={1} marginLeft={2}>
+                      <Text color={STATUS_HEX[job.status]}>{GLYPH[job.status]}</Text>
                       <Box flexGrow={1} flexShrink={1}>
                         <Text wrap="truncate">{job.name}</Text>
                       </Box>
@@ -450,6 +466,7 @@ export const register: Register = (on, options) => {
                           key={`r-${pipe.key}-${job.id}`}
                           label="↻"
                           plain
+                          dimColor
                           onPress={() =>
                             void retry($, `job-${job.id}`, { op: 'retryJob', pipelineId: pipe.id, jobId: job.id }, job.name)
                           }
@@ -459,7 +476,7 @@ export const register: Register = (on, options) => {
                   ))}
                 </Box>
               ))}
-              <Box flexDirection="row" gap={2}>
+              <Box flexDirection="row" gap={2} marginTop={1}>
                 {failed && !isActive(pipe.status) && (
                   <Button
                     key={`rf-${pipe.key}`}
@@ -468,11 +485,14 @@ export const register: Register = (on, options) => {
                       void retry($, `pipe-${pipe.key}`, { op: 'retryFailed', pipelineId: pipe.id }, `${pipe.title} (échecs)`)
                     }
                   >
-                    <Text color="suggestion">{running[`pipe-${pipe.key}`] ? 'Relance…' : '↻ Relancer les échecs'}</Text>
+                    <Text color={STATUS_HEX.failed}>{running[`pipe-${pipe.key}`] ? 'Relance…' : '↻ Relancer les échecs'}</Text>
                   </Button>
                 )}
                 {pipe.url && <Link href={pipe.url} label="Ouvrir ↗" />}
-                <Text dimColor>{backend ? `via ${backend}` : ''}</Text>
+                <Text dimColor>
+                  {formatAge(pipe.createdAt, now)}
+                  {backend ? ` · via ${backend}` : ''}
+                </Text>
               </Box>
             </Box>
           )}
@@ -480,15 +500,26 @@ export const register: Register = (on, options) => {
       )
     })
 
-    return (
-      <Box flexDirection="column">
+    const tree = (
+      <Box flexDirection="column" gap={1}>
         {error && (
-          <Text color="error" wrap="truncate">
+          <Text color={STATUS_HEX.failed} wrap="truncate">
             CI : {error}
           </Text>
         )}
         {rows}
       </Box>
+    )
+    // what the engine and other plugins draw here (plan-progress' bars) stays, under ours
+    const below = await next(e)
+
+    return below ? (
+      <Box flexDirection="column" gap={1}>
+        {tree}
+        {below}
+      </Box>
+    ) : (
+      tree
     )
   })
 }
