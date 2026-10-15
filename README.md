@@ -3,13 +3,13 @@
 A Claude Code mod that shows the **GitHub Actions / GitLab CI pipelines of the current session** in a band right above the prompt, terminal and desktop alike.
 
 - Tracks the branch checked out in the session's folder, plus every branch pushed during the session (`git push`, `gh pr create`, `glab mr create` run by Claude); one line per branch, its latest pipeline.
-- Each line is a **progress track** in the style of the [plan-progress](https://github.com/arhunsaday/claude-plugins/tree/main/plugins/plan-progress) mod by Arhun Saday: a rounded rail filled over the jobs already settled, a capsule at every stage boundary, and a coloured pill at the head naming the current stage (purple running, amber manual, red failed, green done), then the percentage. The terminal draws it as a thin `━━━───` line.
+- Each line is a **fluid progress rail**, one rounded segment per stage sized by its jobs, filled in the stage's colour (purple running, amber manual, red failed, green done); the stage at work pulses with a light sweeping across it, and hovering a segment names the stage. It fills whatever width the band has. The terminal draws it as coloured `━━━ ━━──` segments.
 - Click a line (`⌄` / `⌃`) to open the detail: stages and their jobs with status and duration, `↻` to retry a job, **↻ Relancer les échecs** for the failed jobs, **Ouvrir ↗** for the pipeline page.
 - Refreshes every 20 s while something runs (every 80 s otherwise), and right after a push.
 
 ```
-● feat: login form  feat/login   [▓▓▓▓▓▓▓▓▓▓▓|▓▓▓▓( test )─────|──────]  62%  ⌄
-✓ chore: deps       main         [▓▓▓▓▓▓▓▓▓▓▓|▓▓▓▓▓▓▓▓▓▓▓▓|▓( ✓ 3 étapes )] 100%  ⌃
+● feat: login form  feat/login   ━━━━━━━━ ━━━━━━──── ──────  test     62%  ⌄
+✓ chore: deps       main         ━━━━━━━━ ━━━━━━━━━━ ━━━━━━  terminé 100%  ⌃
     ✓ build 1/1
       ✓ docker-build                1m02  ↻
     ✓ test 2/2

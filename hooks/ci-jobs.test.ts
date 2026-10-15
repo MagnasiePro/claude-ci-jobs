@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunResult, RenderElement } from 'claude-code'
 
 import { detectServers } from './gitlab'
-import { progressOf, trackSvg } from './track'
+import { progressOf, railSvg, textRail } from './track'
 import { glJobs, glPipelines, stagesOf, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
 
 const GH = { provider: 'github', host: 'github.com', path: 'acme/app' } as const
@@ -189,8 +189,12 @@ describe('stages', () => {
     expect(progress.percent).toBe(50)
     expect(progress.current?.name).toBe('test')
     expect(progress.bounds).toEqual([0.25, 0.75])
-    const svg = trackSvg(progress, 'running', 'test', 300)
-    expect(svg).toContain('>test</text>')
+    const svg = railSvg(stages, 'running')
+    expect(svg).toContain('width="100%"')
+    expect(svg).toContain('<title>test · 1/2</title>')
+    expect(svg).toContain('<animate')
+    const rail = textRail(stages, 20)
+    expect(rail.map(part => part.text).join('').length).toBeGreaterThan(15)
     expect(progressOf(stages, 'success').percent).toBe(100)
   })
 })

@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type { Job, Pipeline, Repo, Status } from '../types'
-import { STATUS_HEX, TRACK_H, progressOf, textTrack, textWidth, trackSvg } from './track'
+import { RAIL_H, STATUS_HEX, progressOf, railSvg, textRail } from './track'
 import { BACKEND_LABEL, detectServers, glabArgv, localCall, mcpData, officialCall } from './gitlab'
 import type { BackendKind, GitlabOp, GitlabServers } from './gitlab'
 import {
@@ -389,15 +389,10 @@ export const register: Register = (on, options) => {
     const backend = await read($, via)
     const now = Date.now()
     const shown = list.slice(0, 5)
-    const titleOf = (pipe: Pipeline) => `${pipe.branch} · ${pipe.title}`
-
-    // the same widths for every row, so the rails line up whatever the titles (plan-progress' layout)
+    // the title takes a fixed share of the row so every rail starts and ends at the same place
     const cols = Math.max(30, e.props.bodyColumns || 100)
-    const total = Math.max(320, cols * 8)
-    const titlePx = Math.min(Math.round(total * 0.3), Math.max(...shown.map(pipe => Math.round(textWidth(titleOf(pipe), 6.4)))))
-    const trackPx = Math.max(120, Math.min(1400, total - titlePx - 120))
-    const titleCells = Math.max(6, Math.min(Math.round(cols * 0.28), Math.max(...shown.map(pipe => titleOf(pipe).length))))
-    const trackCells = Math.max(10, cols - titleCells - 14)
+    const TITLE_SHARE = cols < 70 ? 0.4 : 0.32
+    const railCells = Math.max(8, cols - Math.round(cols * TITLE_SHARE) - 24)
 
     const rows = shown.map(pipe => {
       const isOpen = open[pipe.key] === true
@@ -407,36 +402,47 @@ export const register: Register = (on, options) => {
       const label = isActive(pipe.status)
         ? (progress.current?.name ?? 'en attente')
         : pipe.status === 'success'
-          ? `${stages.length} étape${stages.length > 1 ? 's' : ''}`
+          ? 'terminé'
           : (progress.current?.name ?? pipe.status)
       const failed = stages.some(stage => stage.status === 'failed') || pipe.status === 'failed'
       const onToggle = () => void toggle($, pipe.key)
-      const alt = `${titleOf(pipe)}: ${pipe.status}, ${label}, ${progress.percent}%`
-      const line = textTrack(progress.frac, trackCells)
+      const alt = `${pipe.title} (${pipe.branch}): ${label}, ${progress.percent}%`
 
       return (
         <Box key={`b-${pipe.key}`} flexDirection="column">
           <Box flexDirection="row" alignItems="center" gap={1}>
             <Text color={color}>{GLYPH[pipe.status]}</Text>
-            <Box flexShrink={1} width={Svg ? undefined : titleCells}>
+            <Box width={`${Math.round(TITLE_SHARE * 100)}%`} flexShrink={0}>
               <Button key={`t-${pipe.key}`} plain onPress={onToggle}>
                 <Text wrap="truncate">
                   {pipe.title} <Text dimColor>{pipe.branch}</Text>
                 </Text>
               </Button>
             </Box>
-            <Box flexGrow={1} />
-            {Svg ? (
-              <Box flexShrink={0}>
-                <Svg source={trackSvg(progress, pipe.status, label, trackPx)} alt={alt} width={trackPx} height={TRACK_H} />
-              </Box>
-            ) : (
-              <Text>
-                <Text color={color}>{line.done}</Text>
-                <Text dimColor>{line.left}</Text>
-                <Text color={color}> {label}</Text>
+            <Box flexGrow={1} flexShrink={1} minWidth={8}>
+              {Svg ? (
+                <Svg source={railSvg(stages, pipe.status)} alt={alt} height={RAIL_H} isInteractive />
+              ) : (
+                <Text>
+                  {textRail(stages, railCells).map((part, i) =>
+                    part.status === 'todo' ? (
+                      <Text key={`r-${pipe.key}-${i}`} dimColor>
+                        {part.text}
+                      </Text>
+                    ) : (
+                      <Text key={`r-${pipe.key}-${i}`} color={STATUS_HEX[part.status]}>
+                        {part.text}
+                      </Text>
+                    ),
+                  )}
+                </Text>
+              )}
+            </Box>
+            <Box flexShrink={0}>
+              <Text color={color} wrap="truncate">
+                {label}
               </Text>
-            )}
+            </Box>
             <Text dimColor>{`${String(progress.percent).padStart(3, FIGURE_SPACE)}%`}</Text>
             <Button key={`p-${pipe.key}`} plain dimColor label={isOpen ? '⌃' : '⌄'} onPress={onToggle} />
           </Box>
