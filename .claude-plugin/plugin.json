@@ -1,6 +1,6 @@
 {
   "name": "ci-jobs",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Band above the prompt with the GitHub Actions / GitLab CI pipelines of the current session: stepped progress bar per stage, expandable jobs, retry (GitLab via official MCP, local MCP or glab)",
   "author": {
     "name": "MagnasiePro"
