@@ -2,7 +2,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
 import { detectServers } from './gitlab'
-import { glJobs, glPipelines, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
+import { glJobs, glPipelines, progressSegments, stagesOf, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
 
 const GH = { provider: 'github', host: 'github.com', path: 'acme/app' } as const
 const GL = { provider: 'gitlab', host: 'gitlab.example.com', path: 'grp/sub/app' } as const
@@ -42,8 +42,8 @@ const JOBS = JSON.stringify({
 })
 
 /** A fake host: git answers a GitHub remote on main, gh answers RUNS / JOBS; every argv is recorded. */
-function host(on: On, calls: string[][]): void {
-  mock.clock(on)
+function host(on: On, calls: string[][]) {
+  const clock = mock.clock(on)
   on('process.run', ($, e) => {
     const argv = [...e.argv]
     calls.push(argv)
@@ -59,12 +59,14 @@ function host(on: On, calls: string[][]): void {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', () => null as never)
+
+  return clock
 }
 
-const PANE = {
-  component: 'Pane',
-  requestId: 'ci-jobs',
-  props: { title: 'CI', isFocused: false, bodyColumns: 60 } as never,
+const BAND = {
+  component: 'AbovePrompt',
+  props: { hasSurvey: false, isWorking: false, maxRows: 30, bodyColumns: 100 } as never,
 } as const
 
 describe('providers', () => {
@@ -99,10 +101,12 @@ describe('providers', () => {
 describe('pane', () => {
   test('tracks a pushed branch', async ($, on) => {
     const calls: string[][] = []
-    host(on, calls)
+    const clock = host(on, calls)
     on('tool.call', () => ({ result: {} as never, text: 'pushed' }))
     await $.tool.call({ tool: 'Bash', command: 'git push -u origin feat/x' })
-    const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...PANE })
+    await clock.advance(2_500)
+    expect(calls.some(argv => argv.join(' ').includes('--branch feat/x'))).toBe(true)
+    const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...BAND })
     expect(await ui.find({ type: 'Text', text: /feat\/x/ })).toBeDefined()
     await ui.unmount()
   })
@@ -120,7 +124,7 @@ describe('pane', () => {
       const ui = await $.ui.mount({
         plugin: 'ci-jobs',
         surface,
-        ...PANE,
+        ...BAND,
       })
       expect(await ui.find({ key: 'p-github-42' })).toBeDefined()
       expect(await ui.find({ key: 'r-github-42-7' })).toBeUndefined()
@@ -164,7 +168,26 @@ function gitlabHost(on: On, calls: string[]): void {
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [] }))
   on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', () => null as never)
 }
+
+describe('stages', () => {
+  test('rolls jobs up into stages and a stepped bar', () => {
+    const stages = stagesOf([
+      { id: '1', name: 'a', stage: 'build', status: 'success' },
+      { id: '2', name: 'b', stage: 'test', status: 'success' },
+      { id: '3', name: 'c', stage: 'test', status: 'pending' },
+      { id: '4', name: 'd', stage: 'deploy', status: 'manual' },
+    ])
+    expect(stages.map(stage => [stage.name, stage.status, stage.done])).toEqual([
+      ['build', 'success', 1],
+      ['test', 'running', 1],
+      ['deploy', 'manual', 0],
+    ])
+    const bar = progressSegments(stages, 14)
+    expect(bar.map(segment => segment.text).join(' ')).toBe('████ ▓▓▓▓ ▒▒▒▒')
+  })
+})
 
 describe('gitlab chain', () => {
   test('falls from the official MCP to the local one, and retries a job there', async ($, on) => {
@@ -176,10 +199,10 @@ describe('gitlab chain', () => {
       origin: { kind: 'composer' },
       presentation: { isFullscreen: true, columns: 120 },
     })
-    const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...PANE })
+    const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...BAND })
     expect(await ui.find({ key: 'p-gitlab-5' })).toBeDefined()
-    expect((await ui.find({ type: 'Text', text: /via/ }))?.text).toContain('MCP GitLab local')
     await ui.press({ key: 'p-gitlab-5' })
+    expect((await ui.find({ type: 'Text', text: /via/ }))?.text).toContain('MCP GitLab local')
     await ui.press({ key: 'r-gitlab-5-12' })
     expect(calls).toContain('gitlab-forge retry_pipeline_job {"project_id":"77","job_id":"12"}')
     expect(calls.some(call => call.startsWith('plugin:gitlab:gitlab list_pipelines'))).toBe(true)

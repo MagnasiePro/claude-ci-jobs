@@ -328,3 +328,82 @@ export function formatAge(iso: string | undefined, now: number): string {
 
   return `${Math.floor(sec / 86400)}j`
 }
+
+export type Stage = { name: string; status: Status; jobs: Job[]; done: number }
+
+const SETTLED: readonly Status[] = ['success', 'failed', 'canceled', 'skipped']
+
+/** The status of a group of jobs: a failure wins, then work in flight, then what is left. */
+export function rollup(statuses: readonly Status[]): Status {
+  if (statuses.length === 0) return 'unknown'
+  if (statuses.includes('failed')) return 'failed'
+  if (statuses.includes('running')) return 'running'
+  if (statuses.some(status => status === 'pending')) {
+    return statuses.some(status => SETTLED.includes(status)) ? 'running' : 'pending'
+  }
+  if (statuses.includes('manual')) return 'manual'
+  if (statuses.every(status => status === 'canceled')) return 'canceled'
+  if (statuses.every(status => status === 'skipped')) return 'skipped'
+
+  return statuses.includes('canceled') ? 'canceled' : 'success'
+}
+
+/** Jobs grouped by stage in run order (a GitHub job is its own stage). */
+export function stagesOf(jobs: readonly Job[]): Stage[] {
+  const order: string[] = []
+  const groups = new Map<string, Job[]>()
+  for (const job of jobs) {
+    const name = job.stage ?? job.name
+    if (!groups.has(name)) {
+      groups.set(name, [])
+      order.push(name)
+    }
+    groups.get(name)?.push(job)
+  }
+
+  return order.map(name => {
+    const list = groups.get(name) ?? []
+
+    return {
+      name,
+      jobs: list,
+      status: rollup(list.map(job => job.status)),
+      done: list.filter(job => SETTLED.includes(job.status)).length,
+    }
+  })
+}
+
+export const BAR_GLYPH: Record<Status, string> = {
+  success: '█',
+  failed: '█',
+  running: '▓',
+  pending: '░',
+  canceled: '░',
+  skipped: '░',
+  manual: '▒',
+  unknown: '░',
+}
+
+/**
+ * A stepped progress bar: one segment per stage, `width` cells in all, one
+ * blank between segments; each segment is its stage's glyph and colour.
+ */
+export function progressSegments(stages: readonly Stage[], width: number): { text: string; status: Status }[] {
+  if (stages.length === 0) return []
+  const room = Math.max(stages.length, width - (stages.length - 1))
+  const base = Math.floor(room / stages.length)
+  let extra = room - base * stages.length
+
+  return stages.map(stage => {
+    const cells = Math.max(1, base + (extra-- > 0 ? 1 : 0))
+
+    return { text: BAR_GLYPH[stage.status].repeat(cells), status: stage.status }
+  })
+}
+
+/** The latest pipeline of each branch, in the order the list holds them. */
+export function latestPerBranch(list: readonly Pipeline[]): Pipeline[] {
+  const seen = new Set<string>()
+
+  return list.filter(pipe => (seen.has(pipe.branch) ? false : (seen.add(pipe.branch), true)))
+}

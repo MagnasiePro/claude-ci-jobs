@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, ProcessRunResult, Register, RenderChildren } from 'claude-code'
+import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type { Job, Pipeline, Repo } from '../types'
 import { BACKEND_LABEL, detectServers, glabArgv, localCall, mcpData, officialCall } from './gitlab'
@@ -9,6 +9,9 @@ import {
   ICON,
   formatAge,
   formatDuration,
+  latestPerBranch,
+  progressSegments,
+  stagesOf,
   glJobs,
   glPipelines,
   isActive,
@@ -22,8 +25,6 @@ import {
   retryJobArgv,
 } from './providers'
 
-const PANE = 'ci-jobs'
-const TITLE = 'CI'
 
 const repoAtom = atom({ plugin: 'ci-jobs', key: 'repo' } as const, null)
 const branches = atom({ plugin: 'ci-jobs', key: 'branches' } as const, [])
@@ -240,11 +241,12 @@ async function doRefresh($: Dollar): Promise<void> {
     .filter(pipe => (seen.has(pipe.key) ? false : (seen.add(pipe.key), true)))
     .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''))
 
+  const shown = new Set(latestPerBranch(list).map(pipe => pipe.key))
   for (const pipe of list) {
     const old = before.get(pipe.key)
     const isStale = !old || old.status !== pipe.status || isActive(pipe.status)
     pipe.jobs = isStale ? undefined : old.jobs
-    if (open[pipe.key] !== true || !isStale) continue
+    if (!isStale || (!shown.has(pipe.key) && open[pipe.key] !== true)) continue
     try {
       pipe.jobs = await fetchJobs($, repo, pipe)
     } catch (err) {
@@ -299,10 +301,6 @@ async function retry($: Dollar, busyKey: string, op: RetryOp, label: string): Pr
   $.clock.after(5_000, () => void refresh($))
 }
 
-async function openPane($: Dollar): Promise<void> {
-  await $.ui.open({ id: PANE, title: TITLE })
-}
-
 const names = (value: unknown, fallback: string): string[] =>
   String(value ?? fallback)
     .split(',')
@@ -320,7 +318,7 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'ci-jobs',
-      description: 'Affiche le panneau CI (pipelines GitHub/GitLab de la session)',
+      description: 'Rafraîchit la bande CI (pipelines GitHub/GitLab de la session)',
       argumentHint: '[refresh]',
     })
     try {
@@ -330,12 +328,15 @@ export const register: Register = (on, options) => {
     }
     await detectRepo($)
     await track($, await currentBranch($))
-    void openPane($)
+    // v0.2 drew in a side pane; the band above the prompt replaces it
+    void $.ui.close({ id: 'ci-jobs' }).catch(() => undefined)
     void refresh($)
+    let tick = 0
     $.clock.every(pollMs, () => {
+      tick += 1
       void (async () => {
-        const panes = await $.ui.panes()
-        if (panes.some(pane => pane.id === PANE && pane.isShown)) await refresh($)
+        const isBusy = (await read($, pipelines)).some(pipe => isActive(pipe.status))
+        if (isBusy || tick % 4 === 0) await refresh($)
       })()
     })
 
@@ -343,12 +344,11 @@ export const register: Register = (on, options) => {
   })
 
   on('command.run', { command: 'ci-jobs' }, async ($, e) => {
-    await openPane($)
     if (e.args.trim() === 'refresh') await detectRepo($)
     await refresh($)
-    const count = (await read($, pipelines)).length
+    const count = latestPerBranch(await read($, pipelines)).length
 
-    return { text: `Panneau CI ouvert (${count} pipeline${count > 1 ? 's' : ''}).` }
+    return { text: `CI : ${count} pipeline${count > 1 ? 's' : ''} suivie${count > 1 ? 's' : ''}, au-dessus du prompt.` }
   })
 
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
@@ -363,103 +363,102 @@ export const register: Register = (on, options) => {
     return ran
   }).catch(($, e, next) => next(e))
 
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    if (e.props.hasSurvey) return next(e)
     const repo = await read($, repoAtom)
-    const list = await read($, pipelines)
+    const list = latestPerBranch(await read($, pipelines))
+    const error = await read($, errorAtom)
+    if (!repo || (list.length === 0 && !error)) return next(e)
+
+    const { Box, Text, Button, Link } = $.ui.resolve(e)
     const open = await read($, expanded)
     const running = await read($, busy)
-    const error = await read($, errorAtom)
-    const tracked = await read($, branches)
-    const stamp = await read($, updatedAt)
     const backend = await read($, via)
     const now = Date.now()
+    const cols = e.props.bodyColumns
+    const barWidth = Math.max(8, Math.min(28, Math.floor(cols / 4)))
 
-    const ago = (iso?: string) => formatAge(iso, now)
-
-    /** A card like the desktop's own (Environment, Context): rounded, dim frame, padded. */
-    const card = (key: string, children: RenderChildren[]) => (
-      <Box key={key} flexDirection="column" borderStyle="round" borderDimColor paddingX={1} marginBottom={1}>
-        {children}
-      </Box>
-    )
-
-    /** A label on the left, a dim value on the right, as the native cards draw a row. */
-    const row = (key: string, left: RenderChildren, right: RenderChildren) => (
-      <Box key={key} flexDirection="row" justifyContent="space-between" gap={1}>
-        <Box flexShrink={1}>{left}</Box>
-        <Box flexShrink={0}>{right}</Box>
-      </Box>
-    )
-
-    const repoCard = card('repo', [
-      row(
-        'repo-title',
-        <Text bold>Dépôt</Text>,
-        <Button key="refresh" plain onPress={() => void refresh($)}>
-          <Text dimColor>{stamp ? `${ago(new Date(stamp).toISOString())} ⟳` : '⟳'}</Text>
-        </Button>,
-      ),
-      row(
-        'repo-path',
-        <Text wrap="truncate">{repo ? repo.path : 'Aucun dépôt'}</Text>,
-        <Text dimColor>{repo ? (repo.provider === 'github' ? 'GitHub' : 'GitLab') : ''}</Text>,
-      ),
-      row(
-        'repo-branches',
-        <Text wrap="truncate">{tracked.length > 0 ? tracked.join(', ') : '—'}</Text>,
-        <Text dimColor>{backend ? `via ${backend}` : ''}</Text>,
-      ),
-    ])
-
-    const pipelineRows = list.map(pipe => {
+    const rows = list.slice(0, 5).map(pipe => {
       const isOpen = open[pipe.key] === true
-      const failed = pipe.jobs?.some(job => job.status === 'failed') ?? pipe.status === 'failed'
+      const stages = stagesOf(pipe.jobs ?? [])
+      const current = stages.find(stage => stage.status !== 'success' && stage.status !== 'skipped') ?? stages.at(-1)
+      const doneStages = stages.filter(stage => stage.status === 'success' || stage.status === 'skipped').length
+      const failed = stages.some(stage => stage.status === 'failed') || pipe.status === 'failed'
       const onToggle = () => void toggle($, pipe.key)
+
+      const bar = stages.length > 0 ? (
+        progressSegments(stages, barWidth).map((segment, i) => (
+          <Text key={`seg-${pipe.key}-${i}`} color={COLOR[segment.status]}>
+            {i > 0 ? ' ' : ''}
+            {segment.text}
+          </Text>
+        ))
+      ) : (
+        <Text dimColor>{'░'.repeat(barWidth)}</Text>
+      )
 
       return (
         <Box key={`b-${pipe.key}`} flexDirection="column">
-          {row(
-            `h-${pipe.key}`,
+          <Box flexDirection="row" gap={1}>
             <Button key={`p-${pipe.key}`} plain onPress={onToggle}>
-              <Text color={COLOR[pipe.status]}>{ICON[pipe.status]}</Text>
-              {' '}
-              <Text wrap="truncate">{pipe.title}</Text>
-            </Button>,
-            <Button key={`c-${pipe.key}`} plain onPress={onToggle}>
-              <Text dimColor>
-                {pipe.branch} · {ago(pipe.createdAt)} {isOpen ? '⌄' : '›'}
-              </Text>
-            </Button>,
-          )}
+              <Text dimColor>{isOpen ? '▾' : '▸'}</Text> <Text color={COLOR[pipe.status]}>{ICON[pipe.status]}</Text>
+            </Button>
+            <Box flexShrink={0}>{bar}</Box>
+            <Box flexGrow={1} flexShrink={1}>
+              <Button key={`t-${pipe.key}`} plain onPress={onToggle}>
+                <Text wrap="truncate">
+                  {current ? (
+                    <Text color={COLOR[current.status]}>
+                      {current.name} {doneStages}/{stages.length}
+                    </Text>
+                  ) : (
+                    <Text dimColor>…</Text>
+                  )}
+                  <Text dimColor>
+                    {' · '}
+                    {pipe.branch} · {pipe.title} · {formatAge(pipe.createdAt, now)}
+                  </Text>
+                </Text>
+              </Button>
+            </Box>
+          </Box>
           {isOpen && (
-            <Box flexDirection="column" paddingLeft={2} marginBottom={1}>
+            <Box flexDirection="column" paddingLeft={4} marginBottom={1}>
               {!pipe.jobs && <Text dimColor>Chargement des jobs…</Text>}
-              {pipe.jobs?.length === 0 && <Text dimColor>Aucun job</Text>}
-              {pipe.jobs?.map(job =>
-                row(
-                  `j-${pipe.key}-${job.id}`,
-                  <Text wrap="truncate">
-                    <Text color={COLOR[job.status]}>{ICON[job.status]}</Text> {job.name}
-                    {job.stage ? <Text dimColor> · {job.stage}</Text> : ''}
-                  </Text>,
-                  <Box flexDirection="row" gap={1}>
-                    <Text dimColor>{formatDuration(job.durationSec)}</Text>
-                    {running[`job-${job.id}`] ? (
-                      <Text dimColor>…</Text>
-                    ) : (
-                      <Button
-                        key={`r-${pipe.key}-${job.id}`}
-                        label="↻"
-                        plain
-                        onPress={() =>
-                          void retry($, `job-${job.id}`, { op: 'retryJob', pipelineId: pipe.id, jobId: job.id }, job.name)
-                        }
-                      />
-                    )}
-                  </Box>,
-                ),
-              )}
+              {stages.map((stage, i) => (
+                <Box key={`s-${pipe.key}-${stage.name}`} flexDirection="column">
+                  <Text>
+                    <Text color={COLOR[stage.status]}>{ICON[stage.status]}</Text>{' '}
+                    <Text bold>{stage.name}</Text>
+                    <Text dimColor>
+                      {' '}
+                      {stage.done}/{stage.jobs.length}
+                    </Text>
+                  </Text>
+                  {stage.jobs.map(job => (
+                    <Box key={`j-${pipe.key}-${job.id}`} flexDirection="row" gap={1}>
+                      <Text dimColor>{i < stages.length - 1 ? '│' : ' '}</Text>
+                      <Text color={COLOR[job.status]}>{ICON[job.status]}</Text>
+                      <Box flexGrow={1} flexShrink={1}>
+                        <Text wrap="truncate">{job.name}</Text>
+                      </Box>
+                      <Text dimColor>{formatDuration(job.durationSec)}</Text>
+                      {running[`job-${job.id}`] ? (
+                        <Text dimColor>…</Text>
+                      ) : (
+                        <Button
+                          key={`r-${pipe.key}-${job.id}`}
+                          label="↻"
+                          plain
+                          onPress={() =>
+                            void retry($, `job-${job.id}`, { op: 'retryJob', pipelineId: pipe.id, jobId: job.id }, job.name)
+                          }
+                        />
+                      )}
+                    </Box>
+                  ))}
+                </Box>
+              ))}
               <Box flexDirection="row" gap={2}>
                 {failed && !isActive(pipe.status) && (
                   <Button
@@ -473,6 +472,7 @@ export const register: Register = (on, options) => {
                   </Button>
                 )}
                 {pipe.url && <Link href={pipe.url} label="Ouvrir ↗" />}
+                <Text dimColor>{backend ? `via ${backend}` : ''}</Text>
               </Box>
             </Box>
           )}
@@ -480,17 +480,14 @@ export const register: Register = (on, options) => {
       )
     })
 
-    const pipelinesCard = card('pipelines', [
-      row('pipelines-title', <Text bold>Pipelines</Text>, <Text dimColor>{list.length > 0 ? String(list.length) : ''}</Text>),
-      ...(list.length === 0 && !error ? [<Text key="none" dimColor>Aucune pipeline pour l'instant</Text>] : []),
-      ...pipelineRows,
-    ])
-
     return (
       <Box flexDirection="column">
-        {repoCard}
-        {error && card('error', [<Text key="error-text" color="error">{error}</Text>])}
-        {pipelinesCard}
+        {error && (
+          <Text color="error" wrap="truncate">
+            CI : {error}
+          </Text>
+        )}
+        {rows}
       </Box>
     )
   })
