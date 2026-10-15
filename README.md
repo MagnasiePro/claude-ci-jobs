@@ -3,13 +3,13 @@
 A Claude Code mod that shows the **GitHub Actions / GitLab CI pipelines of the current session** in a band right above the prompt, terminal and desktop alike.
 
 - Tracks the branch checked out in the session's folder, plus every branch pushed during the session (`git push`, `gh pr create`, `glab mr create` run by Claude); one line per branch, its latest pipeline.
-- Each line is a **fluid progress rail**, one rounded segment per stage sized by its jobs, filled in the stage's colour (purple running, amber manual, red failed, green done); the stage at work pulses with a light sweeping across it, and hovering a segment names the stage. It fills whatever width the band has. The terminal draws it as coloured `━━━ ━━──` segments.
+- Each line is the pipeline's **stage graph**, the way GitHub and GitLab draw it in small: one node per stage, spread over the full width and joined by a line. Passed stages are green ticks with a green link, a failure a red cross, the running stage spins and breathes with work flowing along its link, waiting stages are hollow; hovering a node names the stage and its job count. The terminal draws it as `●━━━━◉────○`. Set `style` to `rail` for filled segments instead.
 - Click a line (`⌄` / `⌃`) to open the detail: stages and their jobs with status and duration, `↻` to retry a job, **↻ Relancer les échecs** for the failed jobs, **Ouvrir ↗** for the pipeline page.
 - Refreshes every 20 s while something runs (every 80 s otherwise), and right after a push.
 
 ```
-● feat: login form  feat/login   ━━━━━━━━ ━━━━━━──── ──────  test     62%  ⌄
-✓ chore: deps       main         ━━━━━━━━ ━━━━━━━━━━ ━━━━━━  terminé 100%  ⌃
+● feat: login form  feat/login   ●━━━━━━━━━━━◉───────────○  test     62%  ⌄
+✓ chore: deps       main         ●━━━━━━━━━━━●━━━━━━━━━━━●  terminé 100%  ⌃
     ✓ build 1/1
       ✓ docker-build                1m02  ↻
     ✓ test 2/2
@@ -46,6 +46,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope first). The mod
 - The band shows on its own once a tracked branch has a pipeline; `/ci-jobs` refreshes it, `/ci-jobs refresh` also re-reads the repository. The engine's `[-]` folds the band.
 - Options (`/config` → `ci-jobs.*`):
   - `pollSeconds` (default 20): refresh interval.
+  - `style` (`stepper` or `rail`, default `stepper`): stage graph or filled rail.
   - `gitlabMcpOfficial` (default `plugin:gitlab:gitlab`): official GitLab MCP server name(s) as `/mcp` lists them, comma-separated.
   - `gitlabMcpLocal` (default `gitlab-forge`): local GitLab MCP server name(s), comma-separated.
 

@@ -113,3 +113,106 @@ export function textRail(stages: readonly Stage[], cells: number): { text: strin
 
   return out
 }
+
+export const STEPPER_H = 20
+
+const NODE_ICON: Partial<Record<Status, string>> = {
+  success: 'M-3.2 0.2 -1 2.4 3.4-2.2',
+  failed: 'M-2.6-2.6 2.6 2.6M2.6-2.6-2.6 2.6',
+  canceled: 'M-2.8 0h5.6',
+  skipped: 'M-1.4-2.8 1.6 0-1.4 2.8',
+  manual: 'M-1.6-2.8 2.6 0-1.6 2.8z',
+}
+
+/**
+ * The CI pipeline graph, the way GitHub and GitLab draw it in small: one node
+ * per stage, evenly spread over the full width, joined by a line that takes
+ * the colour of the stages already passed. A settled node carries its icon,
+ * the running one spins an arc and breathes a halo, a waiting one is hollow.
+ * Nodes sit in nested SVGs placed in percent, so the graph is fluid while each
+ * node keeps its pixel size. Hovering a node names the stage.
+ */
+export function stepperSvg(stages: readonly Stage[], status: Status): string {
+  const H = STEPPER_H
+  const cy = H / 2
+  const R = 7
+  const list = stages.length > 0 ? stages : [{ name: '', status, jobs: [], done: 0 } as Stage]
+  const n = list.length
+  // nodes spread edge to edge, each nudged inwards by up to its radius in px so the
+  // end ones stay whole at any width: percent for the place, px for the nudge
+  const share = (i: number) => (n === 1 ? 0.5 : i / (n - 1))
+  const at = (i: number) => share(i) * 100
+  const nudge = (i: number) => (R + 1) * (1 - 2 * share(i))
+  const parts: string[] = []
+
+  // links first, under the nodes: each in a frame from one node's place to the next
+  for (let i = 0; i < n - 1; i++) {
+    const from = list[i]
+    const isPassed = from?.status === 'success' || from?.status === 'skipped'
+    const color = isPassed ? STATUS_HEX.success : from?.status === 'failed' ? STATUS_HEX.failed : '#808080'
+    const opacity = isPassed || from?.status === 'failed' ? 0.9 : 0.35
+    const frame = `<svg x="${at(i).toFixed(3)}%" y="0" width="${(at(i + 1) - at(i)).toFixed(3)}%" height="${H}" overflow="visible">`
+    const ends = `x1="${nudge(i).toFixed(1)}" y1="${cy}" x2="100%" y2="${cy}"`
+    parts.push(`${frame}<line ${ends} stroke="${color}" stroke-opacity="${opacity}" stroke-width="2"/>`)
+    if (from?.status === 'running') {
+      // work flowing towards the next stage
+      parts.push(
+        `<line ${ends} stroke="${STATUS_HEX.running}" stroke-width="2" stroke-dasharray="4 6"><animate attributeName="stroke-dashoffset" from="20" to="0" dur=".9s" repeatCount="indefinite"/></line>`,
+      )
+    }
+    parts.push('</svg>')
+  }
+
+  list.forEach((stage, i) => {
+    const color = STATUS_HEX[stage.status]
+    const title = stage.name ? `<title>${esc(stage.name)} · ${stage.done}/${stage.jobs.length} · ${stage.status}</title>` : ''
+    let node = ''
+    if (stage.status === 'running') {
+      node =
+        `<circle r="${R + 2}" fill="${color}" opacity=".25"><animate attributeName="r" values="${R};${R + 4};${R}" dur="1.6s" repeatCount="indefinite"/><animate attributeName="opacity" values=".35;0;.35" dur="1.6s" repeatCount="indefinite"/></circle>` +
+        `<circle r="${R}" class="bg" stroke="${color}" stroke-width="2"/>` +
+        `<path d="M0-${R - 3.5}A${R - 3.5} ${R - 3.5} 0 0 1 ${R - 3.5} 0" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round"><animateTransform attributeName="transform" type="rotate" from="0" to="360" dur="1s" repeatCount="indefinite"/></path>`
+    } else if (stage.status === 'pending' || stage.status === 'unknown') {
+      node = `<circle r="${R - 1}" class="bg" stroke="#808080" stroke-opacity=".7" stroke-width="2"/>`
+    } else {
+      const icon = NODE_ICON[stage.status]
+      node =
+        `<circle r="${R}" fill="${color}"/>` +
+        (icon ? `<path d="${icon}" fill="${stage.status === 'manual' ? '#fff' : 'none'}" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>` : '')
+    }
+    parts.push(`<svg x="${at(i).toFixed(3)}%" y="0" width="1" height="${H}" overflow="visible"><g transform="translate(${nudge(i).toFixed(1)} ${cy})">${title}${node}</g></svg>`)
+  })
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="${H}" overflow="visible">
+<style>svg{display:block;overflow:visible}:root,html,body{background:transparent!important;margin:0;overflow:hidden;color-scheme:light dark}.bg{fill:#fff}@media (prefers-color-scheme:dark){.bg{fill:#1F1E1D}}</style>
+${parts.join('')}</svg>`
+}
+
+const TEXT_NODE: Record<Status, string> = {
+  success: '●',
+  failed: '✕',
+  running: '◉',
+  pending: '○',
+  manual: '▶',
+  canceled: '⊘',
+  skipped: '◌',
+  unknown: '○',
+}
+
+/** The terminal's graph: `●━━━━◉────○`, nodes in their colour, passed links heavy. */
+export function textStepper(stages: readonly Stage[], cells: number): { text: string; status: Status | 'todo' }[] {
+  const list = stages.length > 0 ? stages : []
+  if (list.length === 0) return [{ text: '○', status: 'todo' }]
+  const n = list.length
+  const link = n > 1 ? Math.max(1, Math.floor((cells - n) / (n - 1))) : 0
+  const out: { text: string; status: Status | 'todo' }[] = []
+  list.forEach((stage, i) => {
+    out.push({ text: TEXT_NODE[stage.status], status: stage.status === 'pending' ? 'todo' : stage.status })
+    if (i < n - 1) {
+      const isPassed = stage.status === 'success' || stage.status === 'skipped'
+      out.push(isPassed ? { text: '━'.repeat(link), status: 'success' } : stage.status === 'failed' ? { text: '━'.repeat(link), status: 'failed' } : { text: '─'.repeat(link), status: 'todo' })
+    }
+  })
+
+  return out
+}

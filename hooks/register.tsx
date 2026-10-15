@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type { Job, Pipeline, Repo, Status } from '../types'
-import { RAIL_H, STATUS_HEX, progressOf, railSvg, textRail } from './track'
+import { RAIL_H, STATUS_HEX, STEPPER_H, progressOf, railSvg, stepperSvg, textRail, textStepper } from './track'
 import { BACKEND_LABEL, detectServers, glabArgv, localCall, mcpData, officialCall } from './gitlab'
 import type { BackendKind, GitlabOp, GitlabServers } from './gitlab'
 import {
@@ -187,6 +187,8 @@ async function detectRepo($: Dollar): Promise<Repo | null> {
 }
 
 let servers: GitlabServers = { official: [], local: [] }
+/** `style` option: the stage graph (default) or the filled rail. */
+let isStepper = true
 
 /** Runs a GitLab op down the chain and notes which backend answered. */
 async function viaGitlab($: Dollar, repo: Repo, op: GitlabOp): Promise<unknown> {
@@ -320,6 +322,7 @@ const names = (value: unknown, fallback: string): string[] =>
 
 export const register: Register = (on, options) => {
   const pollMs = Math.max(5, Number(options.pollSeconds ?? 20)) * 1000
+  isStepper = options.style !== 'rail'
   const configured: GitlabServers = {
     official: names(options.gitlabMcpOfficial, 'plugin:gitlab:gitlab'),
     local: names(options.gitlabMcpLocal, 'gitlab-forge'),
@@ -421,10 +424,14 @@ export const register: Register = (on, options) => {
             </Box>
             <Box flexGrow={1} flexShrink={1} minWidth={8}>
               {Svg ? (
-                <Svg source={railSvg(stages, pipe.status)} alt={alt} height={RAIL_H} isInteractive />
+                isStepper ? (
+                  <Svg source={stepperSvg(stages, pipe.status)} alt={alt} height={STEPPER_H} isInteractive />
+                ) : (
+                  <Svg source={railSvg(stages, pipe.status)} alt={alt} height={RAIL_H} isInteractive />
+                )
               ) : (
                 <Text>
-                  {textRail(stages, railCells).map((part, i) =>
+                  {(isStepper ? textStepper(stages, railCells) : textRail(stages, railCells)).map((part, i) =>
                     part.status === 'todo' ? (
                       <Text key={`r-${pipe.key}-${i}`} dimColor>
                         {part.text}

@@ -1,6 +1,6 @@
 {
   "name": "ci-jobs",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Band above the prompt with the GitHub Actions / GitLab CI pipelines of the current session: stepped progress bar per stage, expandable jobs, retry (GitLab via official MCP, local MCP or glab)",
   "author": {
     "name": "MagnasiePro"
@@ -25,6 +25,16 @@
       "title": "Local GitLab MCP server(s)",
       "description": "Server name(s) as /mcp lists them, comma-separated; tried after the official one, before glab",
       "default": "gitlab-forge"
+    },
+    "style": {
+      "type": "string",
+      "title": "Progress style",
+      "description": "stepper: one node per stage joined by a line (GitHub/GitLab graph); rail: filled segments",
+      "options": [
+        "stepper",
+        "rail"
+      ],
+      "default": "stepper"
     }
   }
 }
