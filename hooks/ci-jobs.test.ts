@@ -1,7 +1,8 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On, ProcessRunResult } from 'claude-code'
 
-import { parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
+import { detectServers } from './gitlab'
+import { glJobs, glPipelines, parseJobs, parsePipelines, parseRemote, pushedBranch, retryJobArgv } from './providers'
 
 const GH = { provider: 'github', host: 'github.com', path: 'acme/app' } as const
 const GL = { provider: 'gitlab', host: 'gitlab.example.com', path: 'grp/sub/app' } as const
@@ -131,5 +132,74 @@ describe('pane', () => {
       expect(await ui.find({ key: 'r-github-42-7' })).toBeUndefined()
       await ui.unmount()
     }
+  })
+})
+
+const mcpOk = (data: unknown) => ({ value: { content: [{ type: 'text', text: JSON.stringify(data) }], isError: false } })
+const mcpErr = (text: string) => ({ value: { content: [{ type: 'text', text }], isError: true } })
+
+/** A GitLab repo whose official MCP knows nothing of the project, served by the local MCP. */
+function gitlabHost(on: On, calls: string[]): void {
+  mock.clock(on)
+  on('process.run', ($, e) => {
+    const [bin, ...args] = e.argv
+    calls.push(`process ${e.argv.join(' ')}`)
+    if (bin === 'git' && args[0] === 'remote') return { value: ok('git@forge.example.com:grp/app.git\n') }
+    if (bin === 'git' && args[0] === 'rev-parse') return { value: ok('develop\n') }
+
+    return { value: { ...ok(''), exitCode: 1, stderr: 'glab: no token' } }
+  })
+  on('mcp.call', ($, e) => {
+    calls.push(`${e.server} ${e.tool} ${JSON.stringify(e.args)}`)
+    if (e.server === 'plugin:gitlab:gitlab') return mcpErr('404 Project Not Found')
+    if (e.tool === 'discover_tools') return mcpOk({ activated: 'pipelines' })
+    if (e.tool === 'list_projects') return mcpOk([{ id: '77', path_with_namespace: 'grp/app' }])
+    if (e.tool === 'list_pipelines') return mcpOk([{ id: '5', ref: 'develop', status: 'failed', source: 'push' }])
+    if (e.tool === 'list_pipeline_jobs') return mcpOk([{ id: '12', name: 'test', stage: 'test', status: 'failed' }])
+    if (e.tool === 'retry_pipeline_job') return mcpOk({ id: '13', status: 'pending' })
+
+    return mcpErr(`unexpected ${e.tool}`)
+  })
+  on('tool.list', () => ({ value: [] }))
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('ui.panes', () => ({ value: [] }))
+  on('ui.toast', () => ({ value: undefined }))
+}
+
+describe('gitlab chain', () => {
+  test('falls from the official MCP to the local one, and retries a job there', async ($, on) => {
+    const calls: string[] = []
+    gitlabHost(on, calls)
+    await $.command.run({
+      command: 'ci-jobs',
+      args: '',
+      origin: { kind: 'composer' },
+      presentation: { isFullscreen: true, columns: 120 },
+    })
+    const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...PANE })
+    expect(await ui.find({ key: 'p-gitlab-5' })).toBeDefined()
+    expect((await ui.find({ type: 'Text', text: /via/ }))?.text).toContain('MCP GitLab local')
+    await ui.press({ key: 'p-gitlab-5' })
+    await ui.press({ key: 'r-gitlab-5-12' })
+    expect(calls).toContain('gitlab-forge retry_pipeline_job {"project_id":"77","job_id":"12"}')
+    expect(calls.some(call => call.startsWith('plugin:gitlab:gitlab list_pipelines'))).toBe(true)
+    expect(calls.some(call => call.startsWith('process glab'))).toBe(false)
+    await ui.unmount()
+  })
+
+  test('parses GraphQL-ish answers', () => {
+    const pipes = glPipelines({ pipelines: { nodes: [{ id: 'gid://gitlab/Ci::Pipeline/9', status: 'SUCCESS', ref: 'main' }] } }, 'main')
+    expect(pipes[0]).toMatchObject({ key: 'gitlab-9', status: 'success' })
+    const jobs = glJobs({ jobs: { nodes: [{ id: 'gid://gitlab/Ci::Build/3', name: 'lint', stage: { name: 'test' }, status: 'FAILED' }] } })
+    expect(jobs[0]).toMatchObject({ id: '3', stage: 'test', status: 'failed' })
+  })
+
+  test('finds GitLab MCP servers by their tools', () => {
+    const found = detectServers({ official: ['plugin:gitlab:gitlab'], local: ['gitlab-forge'] }, [
+      'mcp__plugin_gitlab_gitlab__save_pipeline',
+      'mcp__other_gl__retry_pipeline_job',
+      'Bash',
+    ])
+    expect(found).toEqual({ official: ['plugin:gitlab:gitlab'], local: ['gitlab-forge', 'other_gl'] })
   })
 })

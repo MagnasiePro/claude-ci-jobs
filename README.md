@@ -9,7 +9,7 @@ A Claude Code mod that shows the **GitHub Actions / GitLab CI pipelines of the c
 
 ```
 GitHub · acme/app                                  ⟳ 12s
-Branches : feat/login, main
+Branches : feat/login, main · via gh
 ▾ ✗ CI · feat: login form   feat/login · 3m
     ✓ build                        1m02
     ✗ lint                           18s  ↻
@@ -19,9 +19,14 @@ Branches : feat/login, main
 
 ## Requirements
 
-- `gh` authenticated (`gh auth login`) for GitHub repositories.
-- `glab` authenticated (`glab auth login --hostname <host>`) for GitLab repositories (gitlab.com or self-hosted; the host is read from the `origin` remote).
 - The session's folder is a git repository whose `origin` points at GitHub or GitLab.
+- **GitHub**: `gh` authenticated (`gh auth login`).
+- **GitLab**: any one of these, tried in this order for every call:
+  1. the **official GitLab MCP server** (`https://<gitlab>/api/v4/mcp`) connected in Claude — default name `plugin:gitlab:gitlab` (the GitLab plugin). It lists pipelines and jobs and retries a pipeline's failed jobs; it has no single-job retry, so that falls through to the next backend;
+  2. a **local GitLab MCP server** (gitlab-mcp family: `list_pipelines`, `list_pipeline_jobs`, `retry_pipeline_job`, `retry_pipeline`) — default name `gitlab-forge`. Its `pipelines` toolset is activated through `discover_tools` when the server has one, and the project's numeric id is looked up with `list_projects` (some servers allow-list projects by id only);
+  3. **`glab`** authenticated (`glab auth login --hostname <host>`).
+
+  A backend that fails (not connected, project unknown to it, no token) is skipped for 5 minutes for reads, and the next one answers. The pane says which one served it (`via MCP GitLab local`). Other servers exposing `save_pipeline` (official) or `retry_pipeline_job` (local) are picked up on their own.
 
 ## Install
 
@@ -36,7 +41,10 @@ Answer `y` to add the marketplace, then pick a scope (user scope first). The mod
 ## Use
 
 - The pane opens on its own at session start; reopen it with `/ci-jobs`, force a re-detection with `/ci-jobs refresh`.
-- `pollSeconds` (default 20) sets the refresh interval: `/config` → `ci-jobs.pollSeconds`.
+- Options (`/config` → `ci-jobs.*`):
+  - `pollSeconds` (default 20): refresh interval.
+  - `gitlabMcpOfficial` (default `plugin:gitlab:gitlab`): official GitLab MCP server name(s) as `/mcp` lists them, comma-separated.
+  - `gitlabMcpLocal` (default `gitlab-forge`): local GitLab MCP server name(s), comma-separated.
 
 ## Develop
 

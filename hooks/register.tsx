@@ -2,11 +2,15 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, ProcessRunResult, Register } from 'claude-code'
 
 import type { Job, Pipeline, Repo } from '../types'
+import { BACKEND_LABEL, detectServers, glabArgv, localCall, mcpData, officialCall } from './gitlab'
+import type { BackendKind, GitlabOp, GitlabServers } from './gitlab'
 import {
   COLOR,
   ICON,
   formatAge,
   formatDuration,
+  glJobs,
+  glPipelines,
   isActive,
   jobsArgv,
   listArgv,
@@ -28,6 +32,7 @@ const expanded = atom({ plugin: 'ci-jobs', key: 'expanded' } as const, {})
 const busy = atom({ plugin: 'ci-jobs', key: 'busy' } as const, {})
 const errorAtom = atom({ plugin: 'ci-jobs', key: 'error' } as const, null)
 const updatedAt = atom({ plugin: 'ci-jobs', key: 'updatedAt' } as const, 0)
+const via = atom({ plugin: 'ci-jobs', key: 'via' } as const, null)
 
 type Dollar = EngineInterface
 
@@ -38,8 +43,7 @@ const BINARIES: Record<'gh' | 'glab', string[]> = {
 const found: Partial<Record<'gh' | 'glab', string>> = {}
 
 /** Runs gh or glab, trying the usual install places when PATH lacks them. */
-async function cli($: Dollar, repo: Repo, args: string[]): Promise<ProcessRunResult> {
-  const name = repo.provider === 'github' ? 'gh' : 'glab'
+async function cli($: Dollar, name: 'gh' | 'glab', args: string[]): Promise<ProcessRunResult> {
   const known = found[name]
   const tries = known ? [known] : BINARIES[name]
   let last: unknown
@@ -58,6 +62,87 @@ async function cli($: Dollar, repo: Repo, args: string[]): Promise<ProcessRunRes
 
 function failure(ran: ProcessRunResult): string {
   return (ran.stderr || ran.stdout).trim().split('\n').slice(-2).join(' ') || `exit ${ran.exitCode}`
+}
+
+const SKIP_MS = 5 * 60_000
+const skipUntil = new Map<string, number>()
+const projectIds = new Map<string, string>()
+const activated = new Set<string>()
+
+/** Runs a GitLab op down the chain: official MCP, local MCP, then glab. */
+async function runGitlab(
+  $: Dollar,
+  servers: GitlabServers,
+  repo: Repo,
+  op: GitlabOp,
+): Promise<{ data: unknown; backend: BackendKind }> {
+  const errors: string[] = []
+  const isRead = op.op === 'list' || op.op === 'jobs'
+  const isSkipped = (key: string) => isRead && (skipUntil.get(`${key}|${repo.host}/${repo.path}`) ?? 0) > Date.now()
+  const failed = (kind: BackendKind, key: string, err: unknown) => {
+    errors.push(`${BACKEND_LABEL[kind]}: ${err instanceof Error ? err.message : String(err)}`)
+    if (isRead) skipUntil.set(`${key}|${repo.host}/${repo.path}`, Date.now() + SKIP_MS)
+  }
+
+  const official = officialCall(repo, op)
+  for (const server of official ? servers.official : []) {
+    if (!official || isSkipped(server)) continue
+    try {
+      return { data: mcpData(await $.mcp.call(server, official.tool, official.args)), backend: 'mcp-official' }
+    } catch (err) {
+      failed('mcp-official', server, err)
+    }
+  }
+  for (const server of servers.local) {
+    if (isSkipped(server)) continue
+    try {
+      const call = localCall(await localProjectId($, server, repo), op)
+
+      return { data: mcpData(await $.mcp.call(server, call.tool, call.args)), backend: 'mcp-local' }
+    } catch (err) {
+      failed('mcp-local', server, err)
+    }
+  }
+  if (!isSkipped('glab')) {
+    try {
+      const ran = await cli($, 'glab', glabArgv(repo, op))
+      if (ran.exitCode !== 0) throw new Error(failure(ran))
+
+      return { data: JSON.parse(ran.stdout || 'null'), backend: 'glab' }
+    } catch (err) {
+      failed('glab', 'glab', err)
+    }
+  }
+  throw new Error(errors.length > 0 ? errors.join(' | ') : 'aucun backend GitLab disponible')
+}
+
+/**
+ * The project's numeric id on a local server (some allow-list projects by id
+ * only), found among the projects the user belongs to.
+ */
+async function localProjectId($: Dollar, server: string, repo: Repo): Promise<string> {
+  const cacheKey = `${server}|${repo.path}`
+  const cached = projectIds.get(cacheKey)
+  if (cached) return cached
+  if (!activated.has(server)) {
+    activated.add(server)
+    try {
+      await $.mcp.call(server, 'discover_tools', { category: 'pipelines' })
+    } catch {
+      // servers without opt-in toolsets expose the pipeline tools already
+    }
+  }
+  const name = repo.path.split('/').pop() ?? repo.path
+  const data = mcpData(
+    await $.mcp.call(server, 'list_projects', { search: name, membership: true, simple: true, per_page: 100 }),
+  )
+  const list = Array.isArray(data) ? (data as Record<string, unknown>[]) : []
+  const hit = list.find(project => project.path_with_namespace === repo.path)
+  if (!hit || hit.id === undefined) throw new Error(`projet ${repo.path} introuvable`)
+  const id = String(hit.id)
+  projectIds.set(cacheKey, id)
+
+  return id
 }
 
 async function git($: Dollar, args: string[]): Promise<string | undefined> {
@@ -89,8 +174,29 @@ async function detectRepo($: Dollar): Promise<Repo | null> {
   return repo
 }
 
+let servers: GitlabServers = { official: [], local: [] }
+
+/** Runs a GitLab op down the chain and notes which backend answered. */
+async function viaGitlab($: Dollar, repo: Repo, op: GitlabOp): Promise<unknown> {
+  const { data, backend } = await runGitlab($, servers, repo, op)
+  const label = BACKEND_LABEL[backend]
+  if ((await read($, via)) !== label) await update($, via, () => label)
+
+  return data
+}
+
+async function listPipelines($: Dollar, repo: Repo, branch: string): Promise<Pipeline[]> {
+  if (repo.provider === 'gitlab') return glPipelines(await viaGitlab($, repo, { op: 'list', branch, perPage: 5 }), branch)
+  const ran = await cli($, 'gh', listArgv(repo, branch))
+  if (ran.exitCode !== 0) throw new Error(failure(ran))
+  if ((await read($, via)) !== 'gh') await update($, via, () => 'gh')
+
+  return parsePipelines(repo, ran.stdout, branch)
+}
+
 async function fetchJobs($: Dollar, repo: Repo, pipe: Pipeline): Promise<Job[] | undefined> {
-  const ran = await cli($, repo, jobsArgv(repo, pipe.id))
+  if (repo.provider === 'gitlab') return glJobs(await viaGitlab($, repo, { op: 'jobs', pipelineId: pipe.id }))
+  const ran = await cli($, 'gh', jobsArgv(repo, pipe.id))
   if (ran.exitCode !== 0) throw new Error(failure(ran))
 
   return parseJobs(repo, ran.stdout)
@@ -122,9 +228,7 @@ async function doRefresh($: Dollar): Promise<void> {
 
   for (const branch of tracked) {
     try {
-      const ran = await cli($, repo, listArgv(repo, branch))
-      if (ran.exitCode !== 0) throw new Error(failure(ran))
-      next.push(...parsePipelines(repo, ran.stdout, branch))
+      next.push(...(await listPipelines($, repo, branch)))
     } catch (err) {
       errors.push(`${branch}: ${err instanceof Error ? err.message : String(err)}`)
       next.push(...[...before.values()].filter(pipe => pipe.branch === branch))
@@ -167,14 +271,22 @@ async function toggle($: Dollar, key: string): Promise<void> {
   }
 }
 
-async function retry($: Dollar, busyKey: string, argv: (repo: Repo) => string[], label: string): Promise<void> {
+type RetryOp = Extract<GitlabOp, { op: 'retryJob' | 'retryFailed' }>
+
+async function retry($: Dollar, busyKey: string, op: RetryOp, label: string): Promise<void> {
   const repo = await read($, repoAtom)
   if (!repo) return
   if ((await read($, busy))[busyKey]) return
   await update($, busy, map => ({ ...map, [busyKey]: true }))
   try {
-    const ran = await cli($, repo, argv(repo))
-    $.ui.toast(ran.exitCode === 0 ? `CI : ${label} relancé` : `CI : échec — ${failure(ran)}`)
+    if (repo.provider === 'gitlab') {
+      await viaGitlab($, repo, op)
+      $.ui.toast(`CI : ${label} relancé`)
+    } else {
+      const argv = op.op === 'retryJob' ? retryJobArgv(repo, op.pipelineId, op.jobId) : retryFailedArgv(repo, op.pipelineId)
+      const ran = await cli($, 'gh', argv)
+      $.ui.toast(ran.exitCode === 0 ? `CI : ${label} relancé` : `CI : échec — ${failure(ran)}`)
+    }
   } catch (err) {
     $.ui.toast(`CI : échec — ${err instanceof Error ? err.message : String(err)}`)
   } finally {
@@ -191,8 +303,19 @@ async function openPane($: Dollar): Promise<void> {
   await $.ui.open({ id: PANE, title: TITLE })
 }
 
+const names = (value: unknown, fallback: string): string[] =>
+  String(value ?? fallback)
+    .split(',')
+    .map(name => name.trim())
+    .filter(Boolean)
+
 export const register: Register = (on, options) => {
   const pollMs = Math.max(5, Number(options.pollSeconds ?? 20)) * 1000
+  const configured: GitlabServers = {
+    official: names(options.gitlabMcpOfficial, 'plugin:gitlab:gitlab'),
+    local: names(options.gitlabMcpLocal, 'gitlab-forge'),
+  }
+  servers = configured
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -200,6 +323,11 @@ export const register: Register = (on, options) => {
       description: 'Affiche le panneau CI (pipelines GitHub/GitLab de la session)',
       argumentHint: '[refresh]',
     })
+    try {
+      servers = detectServers(configured, (await $.tool.list()).map(tool => tool.name))
+    } catch {
+      servers = configured
+    }
     await detectRepo($)
     await track($, await currentBranch($))
     void openPane($)
@@ -244,6 +372,7 @@ export const register: Register = (on, options) => {
     const error = await read($, errorAtom)
     const tracked = await read($, branches)
     const stamp = await read($, updatedAt)
+    const backend = await read($, via)
     const now = Date.now()
 
     const header = (
@@ -295,7 +424,7 @@ export const register: Register = (on, options) => {
                       label="↻"
                       plain
                       onPress={() =>
-                        void retry($, `job-${job.id}`, r => retryJobArgv(r, pipe.id, job.id), job.name)
+                        void retry($, `job-${job.id}`, { op: 'retryJob', pipelineId: pipe.id, jobId: job.id }, job.name)
                       }
                     />
                   )}
@@ -307,7 +436,7 @@ export const register: Register = (on, options) => {
                     key={`rf-${pipe.key}`}
                     label={running[`pipe-${pipe.key}`] ? 'Relance…' : 'Relancer les échecs'}
                     onPress={() =>
-                      void retry($, `pipe-${pipe.key}`, r => retryFailedArgv(r, pipe.id), `${pipe.title} (échecs)`)
+                      void retry($, `pipe-${pipe.key}`, { op: 'retryFailed', pipelineId: pipe.id }, `${pipe.title} (échecs)`)
                     }
                   />
                 )}
@@ -322,7 +451,12 @@ export const register: Register = (on, options) => {
     return (
       <Box flexDirection="column" gap={0}>
         {header}
-        {tracked.length > 0 && <Text dimColor wrap="truncate">Branches : {tracked.join(', ')}</Text>}
+        {tracked.length > 0 && (
+          <Text dimColor wrap="truncate">
+            Branches : {tracked.join(', ')}
+            {backend ? ` · via ${backend}` : ''}
+          </Text>
+        )}
         {error && <Text color="error">{error}</Text>}
         {list.length === 0 && !error && <Text dimColor>Aucune pipeline pour l'instant.</Text>}
         {rows}

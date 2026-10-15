@@ -155,20 +155,12 @@ type GhRun = {
   url?: string
 }
 
-type GlPipeline = {
-  id: number
-  ref?: string
-  status: string
-  source?: string
-  web_url?: string
-  created_at?: string
-}
-
 /** Turns `listArgv`'s output into pipelines. Throws on unreadable output. */
 export function parsePipelines(repo: Repo, stdout: string, branch: string): Pipeline[] {
   const data: unknown = JSON.parse(stdout || '[]')
-  if (!Array.isArray(data)) throw new Error(errorText(data) ?? 'unexpected answer')
   if (repo.provider === 'github') {
+    if (!Array.isArray(data)) throw new Error(errorText(data) ?? 'unexpected answer')
+
     return (data as GhRun[]).map(run => ({
       key: `github-${run.databaseId}`,
       id: String(run.databaseId),
@@ -180,15 +172,7 @@ export function parsePipelines(repo: Repo, stdout: string, branch: string): Pipe
     }))
   }
 
-  return (data as GlPipeline[]).map(pipe => ({
-    key: `gitlab-${pipe.id}`,
-    id: String(pipe.id),
-    branch: pipe.ref ?? branch,
-    title: `#${pipe.id}${pipe.source ? ` · ${pipe.source}` : ''}`,
-    status: glStatus(pipe.status),
-    url: pipe.web_url,
-    createdAt: pipe.created_at,
-  }))
+  return glPipelines(data, branch)
 }
 
 type GhJob = {
@@ -199,15 +183,6 @@ type GhJob = {
   startedAt?: string
   completedAt?: string
   url?: string
-}
-
-type GlJob = {
-  id: number
-  name: string
-  stage?: string
-  status: string
-  duration?: number | null
-  web_url?: string
 }
 
 function seconds(from?: string, to?: string): number | undefined {
@@ -232,18 +207,75 @@ export function parseJobs(repo: Repo, stdout: string): Job[] {
       url: job.url,
     }))
   }
-  if (!Array.isArray(data)) throw new Error(errorText(data) ?? 'unexpected answer')
 
-  return (data as GlJob[])
-    .map(job => ({
-      id: String(job.id),
-      name: job.name,
-      stage: job.stage,
-      status: glStatus(job.status),
-      durationSec: typeof job.duration === 'number' ? Math.round(job.duration) : undefined,
-      url: job.web_url,
-    }))
-    .reverse()
+  return glJobs(data)
+}
+
+type Rec = Record<string, unknown>
+
+const str = (value: unknown): string | undefined =>
+  typeof value === 'string' ? value : typeof value === 'number' ? String(value) : undefined
+
+/** `123`, `"123"` or a GraphQL global id (`gid://gitlab/Ci::Pipeline/123`) to `"123"`. */
+const plainId = (value: unknown): string => str(value)?.replace(/^gid:\/\/.*\//, '') ?? ''
+
+/**
+ * The list a GitLab answer carries: a REST array, or a GraphQL-ish object
+ * (`{ pipelines: { nodes } }`, `{ jobs: [...] }`, `{ nodes }`, `{ data: ... }`).
+ */
+export function glList(data: unknown, keys: readonly string[]): Rec[] {
+  if (Array.isArray(data)) return data as Rec[]
+  if (!data || typeof data !== 'object') throw new Error('unexpected answer')
+  const obj = data as Rec
+  if (Array.isArray(obj.nodes)) return obj.nodes as Rec[]
+  for (const key of [...keys, 'data', 'project', 'pipeline']) {
+    if (key in obj && obj[key] !== null && typeof obj[key] === 'object') {
+      try {
+        return glList(obj[key], keys)
+      } catch {
+        // try the next key
+      }
+    }
+  }
+  throw new Error(errorText(data) ?? 'unexpected answer')
+}
+
+/** GitLab pipelines from any answer shape (REST via glab or MCP, GraphQL-ish via MCP). */
+export function glPipelines(data: unknown, branch: string): Pipeline[] {
+  return glList(data, ['pipelines']).map(pipe => {
+    const id = plainId(pipe.iid !== undefined && pipe.id === undefined ? pipe.iid : pipe.id)
+    const source = str(pipe.source)?.toLowerCase()
+
+    return {
+      key: `gitlab-${id}`,
+      id,
+      branch: str(pipe.ref) ?? branch,
+      title: `#${id}${source ? ` · ${source}` : ''}`,
+      status: glStatus(str(pipe.status)?.toLowerCase() ?? ''),
+      url: str(pipe.web_url) ?? str(pipe.webUrl),
+      createdAt: str(pipe.created_at) ?? str(pipe.createdAt),
+    }
+  })
+}
+
+/** GitLab jobs from any answer shape, oldest stage first. */
+export function glJobs(data: unknown): Job[] {
+  const list = glList(data, ['jobs']).map(job => {
+    const stage = job.stage && typeof job.stage === 'object' ? str((job.stage as Rec).name) : str(job.stage)
+    const duration = typeof job.duration === 'number' ? Math.round(job.duration) : undefined
+
+    return {
+      id: plainId(job.id),
+      name: str(job.name) ?? '?',
+      stage,
+      status: glStatus(str(job.status)?.toLowerCase() ?? ''),
+      durationSec: duration,
+      url: str(job.web_url) ?? str(job.webUrl),
+    }
+  })
+  const isNewestFirst = list.length > 1 && Number(list[0]?.id) > Number(list[list.length - 1]?.id)
+
+  return isNewestFirst ? list.reverse() : list
 }
 
 function errorText(data: unknown): string | undefined {

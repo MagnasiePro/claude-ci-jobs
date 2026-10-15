@@ -1,8 +1,10 @@
 {
   "name": "ci-jobs",
-  "version": "0.1.0",
-  "description": "Side pane listing the GitHub Actions / GitLab CI pipelines of the current session, with collapsible jobs and retry buttons",
-  "author": { "name": "MagnasiePro" },
+  "version": "0.2.0",
+  "description": "Side pane listing the GitHub Actions / GitLab CI pipelines of the current session, with collapsible jobs and retry (GitLab via official MCP, local MCP or glab)",
+  "author": {
+    "name": "MagnasiePro"
+  },
   "license": "MIT",
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -11,6 +13,18 @@
       "title": "Refresh interval (seconds)",
       "description": "How often the pane polls gh / glab while it is open",
       "default": 20
+    },
+    "gitlabMcpOfficial": {
+      "type": "string",
+      "title": "Official GitLab MCP server(s)",
+      "description": "Server name(s) as /mcp lists them, comma-separated; tried first for GitLab repos",
+      "default": "plugin:gitlab:gitlab"
+    },
+    "gitlabMcpLocal": {
+      "type": "string",
+      "title": "Local GitLab MCP server(s)",
+      "description": "Server name(s) as /mcp lists them, comma-separated; tried after the official one, before glab",
+      "default": "gitlab-forge"
     }
   }
 }

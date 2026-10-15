@@ -42,6 +42,7 @@ declare module 'claude-code' {
       busy: Record<string, boolean>
       error: string | null
       updatedAt: number
+      via: string | null
     }
   }
 }
