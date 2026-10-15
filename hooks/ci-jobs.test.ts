@@ -103,7 +103,7 @@ describe('pane', () => {
     on('tool.call', () => ({ result: {} as never, text: 'pushed' }))
     await $.tool.call({ tool: 'Bash', command: 'git push -u origin feat/x' })
     const ui = await $.ui.mount({ plugin: 'ci-jobs', surface: 'desktop', ...PANE })
-    expect((await ui.find({ type: 'Text', text: /Branches/ }))?.text).toContain('feat/x')
+    expect(await ui.find({ type: 'Text', text: /feat\/x/ })).toBeDefined()
     await ui.unmount()
   })
 
