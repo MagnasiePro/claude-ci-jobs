@@ -1,0 +1,16 @@
+{
+  "name": "ci-jobs",
+  "version": "0.1.0",
+  "description": "Side pane listing the GitHub Actions / GitLab CI pipelines of the current session, with collapsible jobs and retry buttons",
+  "author": { "name": "MagnasiePro" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "pollSeconds": {
+      "type": "number",
+      "title": "Refresh interval (seconds)",
+      "description": "How often the pane polls gh / glab while it is open",
+      "default": 20
+    }
+  }
+}

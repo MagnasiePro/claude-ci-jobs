@@ -1,0 +1,20 @@
+name: CI
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check JSON manifests
+        run: |
+          for f in .claude-plugin/plugin.json .claude-plugin/marketplace.json hooks/hooks.json; do
+            jq empty "$f" && echo "ok $f"
+          done
+  layout:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check plugin layout
+        run: test -f hooks/register.tsx && test -f hooks/providers.ts && test -f types/index.d.ts

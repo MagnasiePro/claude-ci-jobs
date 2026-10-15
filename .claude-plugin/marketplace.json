@@ -1,0 +1,6 @@
+{
+  "name": "magnasiepro",
+  "description": "Claude Code mods by MagnasiePro",
+  "owner": { "name": "MagnasiePro" },
+  "plugins": [{ "name": "ci-jobs", "source": "./" }]
+}
